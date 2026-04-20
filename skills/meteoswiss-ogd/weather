@@ -47,10 +47,48 @@ else
 fi
 
 # Try to load from cache
+# If city name provided, look up PLZ first
+if [[ -n "$CITY" ]]; then
+  CITY_MAP_FILE="${HOME}/.cache/meteoswiss-ogd/city-plz-map.json"
+  
+  if [[ -f "$CITY_MAP_FILE" ]]; then
+    # Try exact match first
+    CITY_DATA=$(jq -r ".cities[\"$CITY\"] // empty" "$CITY_MAP_FILE" 2>/dev/null || echo "")
+    
+    # If not found, try normalized match (case-insensitive, umlauts)
+    if [[ -z "$CITY_DATA" ]]; then
+      # Use Python for normalized lookup
+      CITY_DATA=$(python3 -c "
+import json
+import sys
+name = sys.argv[1].lower()
+# Umlaut normalization
+name = name.replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+with open('$CITY_MAP_FILE') as f:
+    data = json.load(f)
+    # Try direct match after normalization
+    for city, info in data['cities'].items():
+        norm = city.lower().replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+        if norm == name:
+            print(json.dumps(info))
+            break
+" "$CITY" 2>/dev/null || echo "")
+    fi
+    
+    if [[ -n "$CITY_DATA" ]]; then
+      PLZ=$(echo "$CITY_DATA" | jq -r '.plz // empty')
+      ALL_PLZ=$(echo "$CITY_DATA" | jq -r '.all_plz | length // 0')
+      echo "📍 $CITY → PLZ $PLZ ($ALL_PLZ PLZ total)"
+      CITY=""  # Clear city, we now have PLZ
+    fi
+  fi
+fi
+
+# Now load from cache using PLZ
 if [[ -n "$PLZ" ]]; then
   CACHED=$(jq -r ".plz.\"$PLZ\" // empty" "$CACHE_FILE" 2>/dev/null || echo "")
 else
-  CACHED=$(jq -r ".city.\"$CITY\" // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+  CACHED=""
 fi
 
 if [[ -n "$CACHED" ]]; then
@@ -62,13 +100,38 @@ if [[ -n "$CACHED" ]]; then
 else
   echo "🔍 Suche Wetterstation..."
   
-  # If city name, search stations
+  # If still have city name (not resolved to PLZ), try fuzzy matching
   if [[ -n "$CITY" ]]; then
-    RESULT=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/ogd-smn_meta_stations.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | grep -i "$CITY" | head -1 || echo "")
-    if [[ -n "$RESULT" ]]; then
-      STATION=$(echo "$RESULT" | cut -d';' -f1)
-      STATION_NAME=$(echo "$RESULT" | cut -d';' -f2)
-      PLZ=$(echo "$RESULT" | cut -d';' -f6)  # Not always present
+    CITY_MAP_FILE="${HOME}/.cache/meteoswiss-ogd/city-plz-map.json"
+    # Try to find similar city names
+    SIMILAR=$(python3 -c "
+import json
+import sys
+query = sys.argv[1].lower()
+query = query.replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+with open('$CITY_MAP_FILE') as f:
+    data = json.load(f)
+    matches = []
+    for city in data['cities'].keys():
+        norm = city.lower().replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+        if query in norm or norm in query:
+            matches.append(city)
+    print('\n'.join(matches[:5]))
+" "$CITY" 2>/dev/null || echo "")
+    
+    if [[ -n "$SIMILAR" ]]; then
+      echo ""
+      echo "❌ '$CITY' nicht gefunden"
+      echo ""
+      echo "Meintest du eines dieser Orte?"
+      echo "$SIMILAR" | while read -r city; do
+        echo "  ./weather \"$city\""
+      done
+      exit 1
+    else
+      echo "❌ Ort '$CITY' nicht gefunden"
+      echo "Versuche eine Postleitzahl: ./weather 8001"
+      exit 1
     fi
   fi
   
