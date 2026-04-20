@@ -170,6 +170,10 @@ ${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Eglisau"
 
 # Forecast (5 days)
 ${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Zürich" 5
+
+# Simple rain check
+${CLAUDE_SKILL_DIR}/scripts/will-it-rain.sh "Zürich"
+${CLAUDE_SKILL_DIR}/scripts/will-it-rain.sh "Bern" 3
 ```
 
 All scripts support `--help` for detailed usage.

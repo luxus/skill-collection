@@ -22,13 +22,12 @@ Arguments:
   days        Number of days to show (default: 3, max: 7)
 
 Examples:
-  weather-forecast.sh "Eglisau"
-  weather-forecast.sh "Zürich" 5
-  weather-forecast.sh "Bern" 7
+  weather-forecast.sh "Zürich"
+  weather-forecast.sh "Bern" 5
+  weather-forecast.sh "Genf" 3
 
 Requires:
-  - Location cached (use weather-cache.sh set)
-  - Or location searchable (will prompt to cache)
+  - Location cached with point_id (use weather-cache.sh set)
 EOF
   exit "${LOCATION:+1}"
 fi
@@ -49,9 +48,6 @@ if [[ -f "$CACHE_FILE" ]]; then
     STATION_ABBR=$(echo "$CACHED" | jq -r '.station_abbr // empty')
     POSTAL_CODE=$(echo "$CACHED" | jq -r '.postal_code // empty')
     STATION_NAME=$(echo "$CACHED" | jq -r '.station_name // empty')
-    echo "📍 $LOCATION (PLZ: ${POSTAL_CODE:-?}, cached)"
-    echo "   Station: ${STATION_ABBR:-?} (${STATION_NAME:-?})"
-    echo "   Point ID: ${POINT_ID:-?}"
   fi
 fi
 
@@ -70,87 +66,133 @@ if [[ -z "$POINT_ID" && -z "$STATION_ABBR" ]]; then
     FIRST=$(echo "$RESULTS" | head -1)
     PID=$(echo "$FIRST" | awk -F'|' '{print $1}' | xargs)
     echo "   weather-cache.sh set \"$LOCATION\" \"PLZ\" \"\" \"\" \"$PID\""
-    echo "   Then run: weather-forecast.sh \"$LOCATION\""
     exit 1
   fi
   
-  # Search stations
-  RESULTS=$("$SCRIPT_DIR/search-stations.sh" "$LOCATION" 2>/dev/null | head -5)
-  if [[ -n "$RESULTS" ]]; then
-    echo "Stations found (need point_id for forecast):"
-    echo "$RESULTS"
-    echo ""
-    echo "💡 Find point_id with:"
-    FIRST=$(echo "$RESULTS" | head -1)
-    ABBR=$(echo "$FIRST" | awk -F'|' '{print $1}' | xargs)
-    echo "   search-forecast-points.sh \"$ABBR\""
-    exit 1
-  fi
-  
-  echo "❌ Location not found: $LOCATION"
+  echo "❌ No forecast point found for: $LOCATION"
   exit 1
 fi
 
+echo "📍 $LOCATION (PLZ: ${POSTAL_CODE:-?})"
+echo "   Station: ${STATION_ABBR:-?} (${STATION_NAME:-?})"
+echo "   Point ID: ${POINT_ID:-?}"
 echo ""
+
+# Try to get forecast data
+# Strategy: Try direct CSV URL patterns for recent forecast items
+
+get_forecast_direct() {
+  local point_id="$1"
+  local param="$2"
+  local days="$3"
+  
+  # Generate recent item IDs (format: YYYYMMDD-ch)
+  # Try last 3 days
+  for offset in 0 1 2; do
+    local date_str=$(date -v-${offset}d +%Y%m%d 2>/dev/null || date -d "${offset} days ago" +%Y%m%d 2>/dev/null || echo "")
+    [[ -z "$date_str" ]] && continue
+    
+    local item_id="${date_str}-ch"
+    local url="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${item_id}/${param}_ch.${item_id}.csv"
+    
+    # Try to fetch
+    local data=$(curl -sf "$url" 2>/dev/null | awk -F';' -v pid="$point_id" 'NR==1 || $1==pid' || true)
+    if [[ -n "$data" ]]; then
+      echo "$data"
+      return 0
+    fi
+  done
+  
+  return 1
+}
+
 echo "🔮 Forecast (next $DAYS days):"
 echo ""
 
-# Helper: convert parameter to readable
-describe_param() {
-  case "$1" in
-    tre200dx) echo "🌡️  Max Temp" ;;
-    tre200dn) echo "🌡️  Min Temp" ;;
-    rka150d0) echo "🌧️  Rain" ;;
-    jp2000d0) echo "☀️  Icon" ;;
-    *) echo "$1" ;;
-  esac
-}
-
-# Try to get forecast via forecast.sh (handles API quirks)
 if [[ -n "$POINT_ID" ]]; then
-  # Try to get max temp forecast
-  TEMP_DATA=$("$SCRIPT_DIR/forecast.sh" "$POINT_ID" tre200dx 2>/dev/null | tail -n +2 | head -$DAYS || true)
+  # Try to get temperature (max) forecast
+  TEMP_DATA=$(get_forecast_direct "$POINT_ID" "tre200dx" "$DAYS" || true)
   
   if [[ -n "$TEMP_DATA" ]]; then
-    echo "Daily Forecast (Station):"
-    echo "$TEMP_DATA" | while IFS=';' read -r pid d0 d1 d2 d3 d4 d5 d6 d7 rest; do
-      [[ -z "$d0" ]] && continue
-      echo "  Today:     ${d0}°C max"
-      [[ -n "$d1" && "$DAYS" -ge 2 ]] && echo "  +1 day:    ${d1}°C max"
-      [[ -n "$d2" && "$DAYS" -ge 3 ]] && echo "  +2 days:   ${d2}°C max"
-      [[ -n "$d3" && "$DAYS" -ge 4 ]] && echo "  +3 days:   ${d3}°C max"
-      [[ -n "$d4" && "$DAYS" -ge 5 ]] && echo "  +4 days:   ${d4}°C max"
-      [[ -n "$d5" && "$DAYS" -ge 6 ]] && echo "  +5 days:   ${d5}°C max"
-      [[ -n "$d6" && "$DAYS" -ge 7 ]] && echo "  +6 days:   ${d6}°C max"
-      break
-    done
+    # Parse CSV output
+    # Header: point_id;d0;d1;d2;d3;d4;d5;d6;...
+    # Data:   48;14.5;15.2;16.1;...
+    
+    echo "$TEMP_DATA" | awk -F';' -v days="$DAYS" '
+    NR==1 {
+      # Parse header to get day offsets
+      for (i=2; i<=NF && i-2<days; i++) {
+        day_num = i-2
+        if (day_num == 0) day_label = "Today"
+        else if (day_num == 1) day_label = "Tomorrow"
+        else day_label = "+" day_num " days"
+        headers[i] = day_label
+      }
+    }
+    NR==2 {
+      for (i=2; i<=NF && i-2<days; i++) {
+        if ($i != "" && $i != "-") {
+          printf "  %-10s %s°C max\n", headers[i] ":", $i
+        }
+      }
+    }'
+    
+    # Try to get min temp
+    MIN_DATA=$(get_forecast_direct "$POINT_ID" "tre200dn" "$DAYS" 2>/dev/null || true)
+    if [[ -n "$MIN_DATA" ]]; then
+      echo ""
+      echo "  Min temps:"
+      echo "$MIN_DATA" | awk -F';' -v days="$DAYS" '
+      NR==1 { for (i=2; i<=NF && i-2<days; i++) headers[i] = $i }
+      NR==2 {
+        for (i=2; i<=NF && i-2<days; i++) {
+          if ($i != "" && $i != "-") {
+            printf "    %s: %s°C\n", headers[i], $i
+          }
+        }
+      }'
+    fi
+    
+    # Try to get precipitation
+    RAIN_DATA=$(get_forecast_direct "$POINT_ID" "rka150d0" "$DAYS" 2>/dev/null || true)
+    if [[ -n "$RAIN_DATA" ]]; then
+      echo ""
+      echo "  Rain (mm):"
+      echo "$RAIN_DATA" | awk -F';' -v days="$DAYS" '
+      NR==1 { for (i=2; i<=NF && i-2<days; i++) headers[i] = $i }
+      NR==2 {
+        for (i=2; i<=NF && i-2<days; i++) {
+          if ($i != "" && $i != "-" && $i != "0.0" && $i != "0") {
+            printf "    %s: %smm\n", headers[i], $i
+          }
+        }
+      }'
+    fi
+    
   else
-    echo "⚠️  Forecast API not available (STAC limitation)"
+    echo "  ⚠️  Forecast data not available"
     echo ""
-    echo "Try manual forecast from SKILL.md:"
-    echo "  1. Get ITEM: curl -s '.../items?limit=10' | jq -r '.features | map(.id) | sort | reverse | first'"
-    echo "  2. Get ASSET_URL for parameter (tre200dx for daily max temp)"
-    echo "  3. Download CSV and filter for point_id=$POINT_ID"
+    echo "  The forecast CSVs may not be accessible with current date patterns."
+    echo "  Try manual lookup from SKILL.md or check data.geo.admin.ch."
     echo ""
+    
     if [[ -n "$STATION_ABBR" ]]; then
-      echo "📊 Current weather as fallback:"
-      "$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null | grep -E "(tre200s0|ure200s0|fu3010z0)" | while IFS='=' read -r key value; do
+      echo "📊 Current weather (fallback):"
+      "$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null | while IFS='=' read -r key value; do
         case "$key" in
-          tre200s0) echo "   Current temp: ${value}°C" ;;
+          tre200s0) echo "   Temperature: ${value}°C" ;;
           ure200s0) echo "   Humidity: ${value}%" ;;
+          rre150z0) echo "   Rain (10min): ${value}mm" ;;
           fu3010z0) echo "   Wind: ${value}km/h" ;;
+          fu3010z1) echo "   Gusts: ${value}km/h" ;;
         esac
       done
     fi
   fi
 else
-  echo "⚠️  No point_id cached for $LOCATION"
-  echo "   Forecast requires point_id (postal code location)"
-  echo "   Current weather only available via station:"
-  if [[ -n "$STATION_ABBR" ]]; then
-    "$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null | head -5
-  fi
+  echo "  ⚠️  No point_id for $LOCATION"
+  echo "      Need point_id (postal code location) for forecast"
 fi
 
 echo ""
-echo "💡 Tip: For full forecast data, use manual STAC queries from SKILL.md"
+echo "💡 Tip: Use 'search-forecast-points.sh' to find point_id for any location"
