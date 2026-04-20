@@ -21,11 +21,27 @@ needs_update() {
   [[ $age -gt $year ]]
 }
 
-# Ensure databases
-if needs_update "$CACHE_DIR/plz-station-map.json" || needs_update "$CACHE_DIR/city-plz-map.json"; then
-  # Build databases silently
-  "$(dirname "$0")/scripts/build-station-plz-map.sh" >/dev/null 2>&1 || true
-  python3 "$(dirname "$0")/scripts/build-city-plz-map.py" >/dev/null 2>&1 || true
+# Download or build databases
+RELEASE_BASE="https://github.com/luxus/skill-collection/releases/latest/download"
+
+if needs_update "$CACHE_DIR/plz-station-map.json"; then
+  # Try to download from release first (fast)
+  if curl -sfL "${RELEASE_BASE}/plz-station-map.json" -o "$CACHE_DIR/plz-station-map.json.tmp" 2>/dev/null; then
+    mv "$CACHE_DIR/plz-station-map.json.tmp" "$CACHE_DIR/plz-station-map.json"
+    echo "Downloaded plz-station-map.json from release" >&2
+  else
+    # Fallback: build locally (slow)
+    "$(dirname "$0")/scripts/build-station-plz-map.sh" >/dev/null 2>&1 || true
+  fi
+fi
+
+if needs_update "$CACHE_DIR/city-plz-map.json"; then
+  if curl -sfL "${RELEASE_BASE}/city-plz-map.json" -o "$CACHE_DIR/city-plz-map.json.tmp" 2>/dev/null; then
+    mv "$CACHE_DIR/city-plz-map.json.tmp" "$CACHE_DIR/city-plz-map.json"
+    echo "Downloaded city-plz-map.json from release" >&2
+  else
+    python3 "$(dirname "$0")/scripts/build-city-plz-map.py" >/dev/null 2>&1 || true
+  fi
 fi
 
 # Resolve location to PLZ
