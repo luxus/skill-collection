@@ -1,30 +1,31 @@
 #!/bin/bash
 set -euo pipefail
 
-# Simple rain check: Will it rain?
+# Simple rain check with probability
 # Usage: rain-check <postal_code_or_city> [days]
-# Returns: Yes/No with rain amount
+# Returns: Yes/No with rain amount and probability
 
 INPUT="${1:-}"
 DAYS="${2:-2}"
 
 if [[ -z "$INPUT" || "$INPUT" == "--help" ]]; then
-  echo "Usage: rain-check <postal_code_or_city> [days]"
-  echo ""
-  echo "Examples:"
-  echo "  rain-check 8001        # Zürich, next 2 days"
-  echo "  rain-check \"Bern\" 3    # Bern, next 3 days"
-  echo "  rain-check 4001 1      # Basel, just today"
-  exit 1
-fi
+  cat << 'EOF'
+Usage: rain-check <postal_code_or_city> [days]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+Simple yes/no rain check with amount and probability.
+
+Examples:
+  rain-check 8001        # Zürich, next 2 days
+  rain-check "Bern" 3      # Bern, next 3 days
+  rain-check 4001 1        # Basel, just today
+EOF
+  exit "${INPUT:+1}"
+fi
 
 # Resolve to PLZ if city name
 if [[ "$INPUT" =~ ^[0-9]{4}$ ]]; then
   PLZ="$INPUT"
 else
-  # Look up city
   CITY_MAP="${HOME}/.cache/meteoswiss-ogd/city-plz-map.json"
   if [[ -f "$CITY_MAP" ]]; then
     PLZ=$(python3 -c "
@@ -63,19 +64,24 @@ fi
 
 # Check rain forecast
 TODAY=$(date +%Y%m%d)
-RAIN_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100.rka150d0.csv"
+BASE_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100"
+
+# Fetch rain amount and probability
+RAIN_URL="${BASE_URL}.rka150d0.csv"
+PROB_URL="${BASE_URL}.rr1d0.csv"  # Precipitation probability
 
 RAIN_DATA=$(curl -sf "$RAIN_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS || true)
+PROB_DATA=$(curl -sf "$PROB_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS || true)
 
 if [[ -z "$RAIN_DATA" ]]; then
   echo "⚠️  Keine Regen-Prognose verfügbar"
   exit 1
 fi
 
-# Output simple yes/no
 echo "🌧️  Regen-Check für PLZ $PLZ (Station: $STATION)"
 echo ""
 
+# Parse and output
 DAY_NUM=0
 echo "$RAIN_DATA" | while IFS=';' read -r pid ptype date rain rest; do
   [[ -z "$pid" ]] && continue
@@ -84,21 +90,47 @@ echo "$RAIN_DATA" | while IFS=';' read -r pid ptype date rain rest; do
   if [[ $DAY_NUM -eq 0 ]]; then
     LABEL="Heute"
   elif [[ $DAY_NUM -eq 1 ]]; then
-    LABEL="Morgen"
+    LABEL="Morgen  "
   else
     LABEL="+${DAY_NUM} Tage"
   fi
   
-  # Check rain
+  # Get rain amount
   RAIN_MM=$(echo "$rain" | awk '{print $1}')
+  
+  # Get probability for this date
+  PROB=$(echo "$PROB_DATA" | awk -F';' -v d="$date" '$3==d {print $4}' | head -1)
+  PROB_PCT=""
+  if [[ -n "$PROB" && "$PROB" != "0" && "$PROB" != "-" ]]; then
+    # Convert to percentage (value is usually 0-100 or 0-1)
+    if (( $(echo "$PROB > 1" | bc 2>/dev/null || echo 0) )); then
+      PROB_PCT="${PROB}%"
+    else
+      PROB_PCT="$(echo "$PROB * 100" | bc | cut -d'.' -f1)%"
+    fi
+  fi
+  
+  # Check rain amount
   if [[ -n "$RAIN_MM" && "$RAIN_MM" != "0" && "$RAIN_MM" != "0.0" && $(echo "$RAIN_MM > 0" | bc 2>/dev/null || echo 0) -eq 1 ]]; then
     if (( $(echo "$RAIN_MM > 5" | bc 2>/dev/null || echo 0) )); then
-      echo "  $LABEL: 🌧️  JA - ${RAIN_MM}mm (stark!)"
+      ICON="🌧️ "
+      TEXT="stark"
     else
-      echo "  $LABEL: 🌦️  JA - ${RAIN_MM}mm (leicht)"
+      ICON="🌦️ "
+      TEXT="leicht"
+    fi
+    
+    if [[ -n "$PROB_PCT" ]]; then
+      printf "  %s: %s %.1fmm (%s, %s)\n" "$LABEL" "$ICON" "$RAIN_MM" "$TEXT" "$PROB_PCT"
+    else
+      printf "  %s: %s %.1fmm (%s)\n" "$LABEL" "$ICON" "$RAIN_MM" "$TEXT"
     fi
   else
-    echo "  $LABEL: ☀️  NEIN - kein Regen"
+    if [[ -n "$PROB_PCT" && $(echo "$PROB > 30" | bc 2>/dev/null || echo 0) -eq 1 ]]; then
+      printf "  %s: ☁️  NEIN (Aber %s Chance)\n" "$LABEL" "$PROB_PCT"
+    else
+      printf "  %s: ☀️  NEIN - kein Regen\n" "$LABEL"
+    fi
   fi
   
   ((DAY_NUM++)) || true
