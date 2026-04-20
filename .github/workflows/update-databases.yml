@@ -36,26 +36,22 @@ jobs:
         mkdir -p data
         cp ~/.cache/meteoswiss-ogd/plz-station-map.json data/
         cp ~/.cache/meteoswiss-ogd/city-plz-map.json data/
+        ls -lh data/
         
-    - name: Commit changes
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add data/
-        git diff --staged --quiet || (git commit -m "Update weather databases - $(date +%Y-%m-%d)" && git push)
+    - name: Get current date
+      id: date
+      run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
         
-    - name: Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create Release with Assets
+      uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ github.run_number }}
-        release_name: Weather Database Update ${{ github.run_number }}
+        name: Weather Database ${{ steps.date.outputs.date }}
         body: |
           Automated update of MeteoSwiss weather station mappings.
           
-          ## Files
-          - `plz-station-map.json` - ~3200 PLZ to station mappings
+          ## Database Files
+          - `plz-station-map.json` - ~3200 PLZ to station mappings with coordinates
           - `city-plz-map.json` - ~4000 cities to PLZ mappings
           
           ## Usage
@@ -63,5 +59,12 @@ jobs:
           ```bash
           curl -L https://github.com/luxus/skill-collection/releases/download/v${{ github.run_number }}/plz-station-map.json
           ```
+          
+          Generated: ${{ steps.date.outputs.date }}
+        files: |
+          data/plz-station-map.json
+          data/city-plz-map.json
         draft: false
         prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
