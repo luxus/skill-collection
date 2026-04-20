@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""
+MeteoSwiss Weather API - JSON Output
+Usage: weather-json <postal_code_or_city> [days]
+Example: weather-json 8001
+Example: weather-json "Zürich" 3
+"""
+
+import sys
+import json
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+def run_weather(location, days=3):
+    """Run the weather script and parse output"""
+    script_dir = Path(__file__).parent
+    weather_script = script_dir / "weather"
+    
+    # Run weather script
+    result = subprocess.run(
+        [str(weather_script), str(location), str(days)],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        return {"error": result.stderr or "Failed to fetch weather data"}
+    
+    lines = result.stdout.strip().split('\n')
+    
+    # Parse output
+    data = {
+        "location": location,
+        "timestamp": datetime.now().isoformat(),
+        "current": {},
+        "forecast": []
+    }
+    
+    section = None
+    for line in lines:
+        if '🕐' in line:
+            # Query time
+            data["query_time"] = line.split('|')[1].strip() if '|' in line else line
+        elif '📍' in line:
+            # Location info
+            data["station_info"] = line.replace('📍', '').strip()
+        elif '🌡️' in line:
+            section = "current"
+        elif '🔮' in line:
+            section = "forecast"
+        elif section == "current" and ':' in line:
+            # Parse current weather line
+            key_val = line.strip().split(':')
+            if len(key_val) >= 2:
+                key = key_val[0].strip()
+                val = key_val[1].strip()
+                # Clean up value
+                val = val.replace('°C', '').replace('%', '').replace('mm', '').replace('km/h', '').replace('°', '').replace('hPa', '').strip()
+                try:
+                    val = float(val)
+                except:
+                    pass
+                data["current"][key] = val
+        elif section == "forecast" and '°C' in line:
+            # Parse forecast line
+            parts = line.strip().split()
+            if len(parts) >= 2 and ('Heute' in line or 'Morgen' in line or len(parts[0].split('.')) > 1):
+                date_label = parts[0]
+                max_temp = parts[1].replace('°C', '')
+                min_temp = parts[2].replace('°C', '') if len(parts) > 2 else None
+                try:
+                    max_val = float(max_temp) if max_temp.replace('.', '').replace('-', '').isdigit() else None
+                    min_val = float(min_temp) if min_temp and min_temp.replace('.', '').replace('-', '').isdigit() else None
+                    data["forecast"].append({
+                        "date": date_label,
+                        "max_c": max_val,
+                        "min_c": min_val
+                    })
+                except:
+                    pass
+    
+    return data
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "Usage: weather-json <location> [days]"}))
+        sys.exit(1)
+    
+    location = sys.argv[1]
+    days = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    
+    result = run_weather(location, days)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
