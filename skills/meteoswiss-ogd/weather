@@ -84,7 +84,8 @@ else
       60|61|62|63|64|65|66) STATION="LUG"; STATION_NAME="Lugano" ;;  # Tessin
       67|68|69) STATION="SIO"; STATION_NAME="Sion" ;;  # Wallis
       70|71|72|73|74|75|76) STATION="CHZ"; STATION_NAME="Chur" ;;  # Graubünden
-      80|81|82|83|84|85|86|87|88|89) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;  # Zürich
+      80|81) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;  # Zürich
+      82|83|84|85|86|87|88|89) STATION="STG"; STATION_NAME="St. Gallen" ;;  # Thurgau/Ostschweiz
       90|91|92|93|94|95|96|97|98|99) STATION="STG"; STATION_NAME="St. Gallen" ;;  # Ostschweiz
       *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
     esac
