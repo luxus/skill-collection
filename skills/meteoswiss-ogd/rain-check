@@ -1,0 +1,108 @@
+#!/bin/bash
+set -euo pipefail
+
+# Simple rain check: Will it rain?
+# Usage: rain-check <postal_code_or_city> [days]
+# Returns: Yes/No with rain amount
+
+INPUT="${1:-}"
+DAYS="${2:-2}"
+
+if [[ -z "$INPUT" || "$INPUT" == "--help" ]]; then
+  echo "Usage: rain-check <postal_code_or_city> [days]"
+  echo ""
+  echo "Examples:"
+  echo "  rain-check 8001        # Zürich, next 2 days"
+  echo "  rain-check \"Bern\" 3    # Bern, next 3 days"
+  echo "  rain-check 4001 1      # Basel, just today"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve to PLZ if city name
+if [[ "$INPUT" =~ ^[0-9]{4}$ ]]; then
+  PLZ="$INPUT"
+else
+  # Look up city
+  CITY_MAP="${HOME}/.cache/meteoswiss-ogd/city-plz-map.json"
+  if [[ -f "$CITY_MAP" ]]; then
+    PLZ=$(python3 -c "
+import json
+name = '$INPUT'.lower()
+name = name.replace('ü', 'u').replace('ä', 'a').replace('ö', 'o')
+with open('$CITY_MAP') as f:
+    data = json.load(f)
+    for city, info in data['cities'].items():
+        if city.lower().replace('ü','u').replace('ä','a').replace('ö','o') == name:
+            print(info['plz'])
+            break
+" 2>/dev/null || echo "")
+  fi
+  
+  if [[ -z "$PLZ" ]]; then
+    echo "❌ Ort nicht gefunden: $INPUT"
+    exit 1
+  fi
+fi
+
+# Get station for PLZ
+MAP_FILE="${HOME}/.cache/meteoswiss-ogd/plz-station-map.json"
+if [[ ! -f "$MAP_FILE" ]]; then
+  echo "⚠️  Datenbank nicht gefunden. Bitte zuerst './weather $PLZ' ausführen."
+  exit 1
+fi
+
+STATION=$(jq -r ".\"$PLZ\".station" "$MAP_FILE" 2>/dev/null || echo "")
+POINT_ID=$(jq -r ".\"$PLZ\".point_id" "$MAP_FILE" 2>/dev/null || echo "")
+
+if [[ -z "$STATION" ]]; then
+  echo "❌ Keine Station für PLZ $PLZ gefunden"
+  exit 1
+fi
+
+# Check rain forecast
+TODAY=$(date +%Y%m%d)
+RAIN_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100.rka150d0.csv"
+
+RAIN_DATA=$(curl -sf "$RAIN_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS || true)
+
+if [[ -z "$RAIN_DATA" ]]; then
+  echo "⚠️  Keine Regen-Prognose verfügbar"
+  exit 1
+fi
+
+# Output simple yes/no
+echo "🌧️  Regen-Check für PLZ $PLZ (Station: $STATION)"
+echo ""
+
+DAY_NUM=0
+echo "$RAIN_DATA" | while IFS=';' read -r pid ptype date rain rest; do
+  [[ -z "$pid" ]] && continue
+  
+  # Format date label
+  if [[ $DAY_NUM -eq 0 ]]; then
+    LABEL="Heute"
+  elif [[ $DAY_NUM -eq 1 ]]; then
+    LABEL="Morgen"
+  else
+    LABEL="+${DAY_NUM} Tage"
+  fi
+  
+  # Check rain
+  RAIN_MM=$(echo "$rain" | awk '{print $1}')
+  if [[ -n "$RAIN_MM" && "$RAIN_MM" != "0" && "$RAIN_MM" != "0.0" && $(echo "$RAIN_MM > 0" | bc 2>/dev/null || echo 0) -eq 1 ]]; then
+    if (( $(echo "$RAIN_MM > 5" | bc 2>/dev/null || echo 0) )); then
+      echo "  $LABEL: 🌧️  JA - ${RAIN_MM}mm (stark!)"
+    else
+      echo "  $LABEL: 🌦️  JA - ${RAIN_MM}mm (leicht)"
+    fi
+  else
+    echo "  $LABEL: ☀️  NEIN - kein Regen"
+  fi
+  
+  ((DAY_NUM++)) || true
+  [[ $DAY_NUM -ge $DAYS ]] && break
+done
+
+echo ""
