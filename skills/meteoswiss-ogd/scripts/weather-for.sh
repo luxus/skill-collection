@@ -9,6 +9,11 @@ LOCATION="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE_FILE="${HOME}/.cache/meteoswiss-ogd/locations.json"
 
+# Format current time
+CURRENT_TIME=$(date '+%H:%M')
+CURRENT_DATE=$(date '+%d.%m.%Y')
+CURRENT_WEEKDAY=$(date '+%A')
+
 if [[ -z "$LOCATION" || "$1" == "--help" || "$1" == "-h" ]]; then
   cat << 'EOF'
 Usage: weather-for.sh <location>
@@ -40,12 +45,31 @@ if [[ -f "$CACHE_FILE" ]]; then
     POSTAL_CODE=$(echo "$CACHED" | jq -r '.postal_code // empty')
     
     if [[ -n "$STATION_ABBR" ]]; then
+      # Show time and date
+      echo "🕐 ${CURRENT_WEEKDAY}, ${CURRENT_DATE} ${CURRENT_TIME}"
       echo "📍 $LOCATION (cached: $(echo "$CACHED" | jq -r '.updated // "unknown"' | cut -dT -f1))"
       echo "   Station: $STATION_ABBR ($(echo "$CACHED" | jq -r '.station_name // ""'))"
       [[ -n "$POSTAL_CODE" ]] && echo "   PLZ: $POSTAL_CODE"
       echo ""
-      echo "🌡️  Current weather:"
-      "$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null | while IFS='=' read -r key value; do
+      
+      # Get weather data with timestamp
+      WEATHER_DATA=$("$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null)
+      
+      # Extract timestamp if present (format: reference_timestamp=YYYYMMDDHHmm)
+      TIMESTAMP=$(echo "$WEATHER_DATA" | grep "^reference_timestamp=" | cut -d'=' -f2 || echo "")
+      if [[ -n "$TIMESTAMP" && ${#TIMESTAMP} -eq 12 ]]; then
+        # Parse YYYYMMDDHHmm
+        YEAR=${TIMESTAMP:0:4}
+        MONTH=${TIMESTAMP:4:2}
+        DAY=${TIMESTAMP:6:2}
+        HOUR=${TIMESTAMP:8:2}
+        MIN=${TIMESTAMP:10:2}
+        echo "🌡️  Current weather (updated: ${DAY}.${MONTH}. ${HOUR}:${MIN} UTC):"
+      else
+        echo "🌡️  Current weather:"
+      fi
+      
+      echo "$WEATHER_DATA" | while IFS='=' read -r key value; do
         case "$key" in
           tre200s0) echo "   Temperature: ${value}°C" ;;
           ure200s0) echo "   Humidity: ${value}%" ;;
@@ -61,6 +85,7 @@ if [[ -f "$CACHE_FILE" ]]; then
 fi
 
 # Not cached - search for stations
+echo "🕐 ${CURRENT_WEEKDAY}, ${CURRENT_DATE} ${CURRENT_TIME}"
 echo "🔍 Location not cached. Searching for: $LOCATION"
 echo ""
 
