@@ -18,19 +18,30 @@ Schweizer Wetterdaten direkt von MeteoSwiss OGD. Alle Daten sind frei verfügbar
 
 ## Schnellstart
 
-**Wichtig:** `${CLAUDE_SKILL_DIR}` ist eine Variable, die Pi automatisch setzt wenn du `/skill:meteoswiss-ogd` aktivierst. Du brauchst sie nicht manuell zu setzen.
+### Wichtig: ` skill:` Befehl in Pi
 
 ```bash
-# In Pi (nach /skill:meteoswiss-ogd)
+# So aktivierst du den Skill in Pi:
+/skill:meteoswiss-ogd
+
+# Dann kannst du die Scripts nutzen:
 ${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Zürich"
-${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Bern" 3
 ```
 
-**Oder direkt ohne Pi:**
+### Einfachstes CLI (ohne /skill Befehl)
+
 ```bash
-# Pfad anpassen wo du das Repo hast
-SKILL_DIR="/Users/luxus/projects/skill-collection/skills/meteoswiss-ogd"
-$SKILL_DIR/scripts/weather-for.sh "Zürich"
+# Im Skill-Ordner direkt:
+./weather now "Zürich"
+./weather forecast "Bern" 3
+./weather cache list
+```
+
+### Ohne Pi (Terminal)
+
+```bash
+cd /pfad/zu/skill-collection/skills/meteoswiss-ogd
+./weather now "Zürich"
 ```
 
 ## Quick Reference

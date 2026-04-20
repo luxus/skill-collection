@@ -1,0 +1,84 @@
+#!/bin/bash
+# MeteoSwiss Weather CLI - Funktioniert überall (Pi, Terminal, Script)
+
+# Finde das Skill-Verzeichnis automatisch oder nutze Umgebungsvariable
+if [[ -n "${CLAUDE_SKILL_DIR:-}" ]]; then
+  # Wir sind in Pi
+  SKILL_DIR="$CLAUDE_SKILL_DIR"
+elif [[ -f "$(dirname "$0")/scripts/weather-for.sh" ]]; then
+  # Script liegt im Skill-Ordner (relativ)
+  SKILL_DIR="$(dirname "$0")"
+elif [[ -d "$HOME/.pi/agent/git/github.com/luxus/skill-collection/skills/meteoswiss-ogd" ]]; then
+  # Pi hat es installiert
+  SKILL_DIR="$HOME/.pi/agent/git/github.com/luxus/skill-collection/skills/meteoswiss-ogd"
+else
+  echo "Fehler: Kann skill-collection nicht finden."
+  echo ""
+  echo "Lösungen:"
+  echo "  1. In Pi: /skill:meteoswiss-ogd aktivieren"
+  echo "  2. Oder: pi install git:github.com/luxus/skill-collection"
+  echo "  3. Oder: SKILL_DIR setzen:"
+  echo "     export SKILL_DIR=/pfad/zu/skill-collection/skills/meteoswiss-ogd"
+  exit 1
+fi
+
+# Hilfe
+if [[ -z "${1:-}" || "$1" == "--help" || "$1" == "-h" ]]; then
+  cat << 'EOF'
+MeteoSwiss Weather CLI
+
+Nutzung: weather <befehl> [ort] [optionen]
+
+Befehle:
+  now, aktuell     Aktuelles Wetter
+  forecast, prognose  Prognose nächste Tage
+  rain, regen      Regen-Check
+  cache            Location verwalten
+
+Beispiele:
+  weather now "Zürich"
+  weather forecast "Bern" 3
+  weather cache list
+
+Ohne Befehl: Interaktiver Modus
+EOF
+  exit 0
+fi
+
+COMMAND="${1:-now}"
+LOCATION="${2:-}"
+DAYS="${3:-3}"
+
+case "$COMMAND" in
+  now|aktuell|current)
+    if [[ -z "$LOCATION" ]]; then
+      echo "Usage: weather now <ort>"
+      echo "  z.B.: weather now \"Zürich\""
+      exit 1
+    fi
+    "$SKILL_DIR/scripts/weather-for.sh" "$LOCATION"
+    ;;
+  forecast|prognose|f)
+    if [[ -z "$LOCATION" ]]; then
+      echo "Usage: weather forecast <ort> [tage]"
+      echo "  z.B.: weather forecast \"Bern\" 3"
+      exit 1
+    fi
+    "$SKILL_DIR/scripts/weather-forecast.sh" "$LOCATION" "$DAYS"
+    ;;
+  rain|regen|wird-es-regnen)
+    if [[ -z "$LOCATION" ]]; then
+      echo "Usage: weather rain <ort> [tage]"
+      echo "  z.B.: weather rain \"Zürich\" 2"
+      exit 1
+    fi
+    "$SKILL_DIR/scripts/will-it-rain.sh" "$LOCATION" "$DAYS"
+    ;;
+  cache)
+    "$SKILL_DIR/scripts/weather-cache.sh" "${2:-list}"
+    ;;
+  *)
+    # Versuche es als Ort mit "now"
+    "$SKILL_DIR/scripts/weather-for.sh" "$COMMAND"
+    ;;
+esac
