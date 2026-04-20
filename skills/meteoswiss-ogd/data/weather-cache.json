@@ -1,0 +1,14 @@
+{
+  "plz": {
+    "8001": {
+      "station": "SMA",
+      "station_name": "Zürich / Fluntern",
+      "point_id": "71"
+    },
+    "8400": {
+      "station": "TAE",
+      "station_name": "Aadorf / Tänikon",
+      "point_id": "82"
+    }
+  }
+}

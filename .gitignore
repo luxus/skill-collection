@@ -1,3 +1,9 @@
 node_modules/
 .DS_Store
+*.log
+
+# Keep data folder but not local cache
 .hindsight/
+
+# Local cache files (not the pre-built data)
+*.cache

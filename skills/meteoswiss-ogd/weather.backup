@@ -1,0 +1,240 @@
+#!/bin/bash
+set -euo pipefail
+
+# One-call weather for Swiss postal codes or city names
+# Usage: weather <postal_code_or_city> [days]
+# Example: weather 8152 3
+# Example: weather Zürich 3
+
+INPUT="${1:-}"
+DAYS="${2:-3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_FILE="${HOME}/.cache/meteoswiss-ogd/weather-cache.json"
+
+mkdir -p "$(dirname "$CACHE_FILE")"
+[[ -f "$CACHE_FILE" ]] || echo '{}' > "$CACHE_FILE"
+
+if [[ -z "$INPUT" || "$INPUT" == "--help" || "$INPUT" == "-h" ]]; then
+  cat << 'EOF'
+Usage: weather <postal_code_or_city> [days]
+
+Get weather and forecast for any Swiss postal code or city.
+Automatically finds nearest station, caches mapping.
+
+Examples:
+  weather 8152        # Glattbrugg via Zürich
+  weather 8000        # Zürich
+  weather Zürich      # By city name
+  weather 8000 5      # 5 days forecast
+
+Output: Current weather + daily forecast
+Cache: ~/.cache/meteoswiss-ogd/weather-cache.json
+EOF
+  exit "${INPUT:+1}"
+fi
+
+NOW=$(date '+%d.%m.%Y %H:%M')
+
+# Check if input is postal code (4 digits) or city name
+if [[ "$INPUT" =~ ^[0-9]{4}$ ]]; then
+  PLZ="$INPUT"
+  CITY=""
+  echo "🕐 $NOW | PLZ $PLZ"
+else
+  CITY="$INPUT"
+  PLZ=""
+  echo "🕐 $NOW | $CITY"
+fi
+
+# Try to load from cache
+# If city name provided, look up PLZ first
+if [[ -n "$CITY" ]]; then
+  CITY_MAP_FILE="${HOME}/.cache/meteoswiss-ogd/city-plz-map.json"
+  
+  if [[ -f "$CITY_MAP_FILE" ]]; then
+    # Try exact match first
+    CITY_DATA=$(jq -r ".cities[\"$CITY\"] // empty" "$CITY_MAP_FILE" 2>/dev/null || echo "")
+    
+    # If not found, try normalized match (case-insensitive, umlauts)
+    if [[ -z "$CITY_DATA" ]]; then
+      # Use Python for normalized lookup
+      CITY_DATA=$(python3 -c "
+import json
+import sys
+name = sys.argv[1].lower()
+# Umlaut normalization
+name = name.replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+with open('$CITY_MAP_FILE') as f:
+    data = json.load(f)
+    # Try direct match after normalization
+    for city, info in data['cities'].items():
+        norm = city.lower().replace('ü', 'u').replace('ä', 'a').replace('ö', 'o').replace('é','e').replace('è','e')
+        if norm == name:
+            print(json.dumps(info))
+            break
+" "$CITY" 2>/dev/null || echo "")
+    fi
+    
+    if [[ -n "$CITY_DATA" ]]; then
+      PLZ=$(echo "$CITY_DATA" | jq -r '.plz // empty')
+      ALL_PLZ=$(echo "$CITY_DATA" | jq -r '.all_plz | length // 0')
+      echo "📍 $CITY → PLZ $PLZ ($ALL_PLZ PLZ total)"
+      CITY=""  # Clear city, we now have PLZ
+    fi
+  fi
+fi
+
+# Now load from cache using PLZ
+if [[ -n "$PLZ" ]]; then
+  CACHED=$(jq -r ".plz.\"$PLZ\" // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+else
+  CACHED=""
+fi
+
+if [[ -n "$CACHED" ]]; then
+  STATION=$(echo "$CACHED" | jq -r '.station // empty')
+  STATION_NAME=$(echo "$CACHED" | jq -r '.station_name // empty')
+  POINT_ID=$(echo "$CACHED" | jq -r '.point_id // empty')
+  echo "📍 $STATION_NAME (Station: $STATION, Point: $POINT_ID)"
+  echo "   (Aus Cache)"
+else
+  echo "🔍 Suche Wetterstation..."
+  
+  # If city name, search stations
+  if [[ -n "$CITY" ]]; then
+    RESULT=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/ogd-smn_meta_stations.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | grep -i "$CITY" | head -1 || echo "")
+    if [[ -n "$RESULT" ]]; then
+      STATION=$(echo "$RESULT" | cut -d';' -f1)
+      STATION_NAME=$(echo "$RESULT" | cut -d';' -f2)
+      PLZ=$(echo "$RESULT" | cut -d';' -f6)  # Not always present
+    fi
+  fi
+  
+  # If PLZ or no city match, use the detailed PLZ->Station mapping if available
+  if [[ -z "${STATION:-}" && -n "$PLZ" ]]; then
+    MAP_FILE="${HOME}/.cache/meteoswiss-ogd/plz-station-map.json"
+    
+    if [[ -f "$MAP_FILE" ]]; then
+      # Use pre-built mapping (very accurate)
+      MAPPED=$(jq -r ".\"$PLZ\" // empty" "$MAP_FILE" 2>/dev/null || echo "")
+      if [[ -n "$MAPPED" ]]; then
+        STATION=$(echo "$MAPPED" | jq -r '.station // empty')
+        STATION_NAME=$(echo "$MAPPED" | jq -r '.station_name // empty')
+        POINT_ID=$(echo "$MAPPED" | jq -r '.point_id // empty')
+        DISTANCE=$(echo "$MAPPED" | jq -r '.distance_km // empty')
+        MAPPED_SOURCE="mapping"
+      fi
+    fi
+    
+    # Fallback: rough region mapping
+    if [[ -z "${STATION:-}" ]]; then
+      PREFIX="${PLZ:0:2}"
+      case "$PREFIX" in
+        10|11|12) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;
+        20|21|22|23|24|25|26|27|28|29) STATION="NEU"; STATION_NAME="Neuchâtel" ;;
+        30|31|32|33|34|35|36) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;
+        40|41|42|43|44|45|46|47|48|49) STATION="BAS"; STATION_NAME="Basel/Binningen" ;;
+        50|51|52|53|54|55|56|57|58|59) STATION="LUC"; STATION_NAME="Luzern" ;;
+        60|61|62|63|64|65|66) STATION="LUG"; STATION_NAME="Lugano" ;;
+        67|68|69) STATION="SIO"; STATION_NAME="Sion" ;;
+        70|71|72|73|74|75|76) STATION="CHZ"; STATION_NAME="Chur" ;;
+        80|81) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+        82|83|84|85|86|87|88|89) STATION="STG"; STATION_NAME="St. Gallen" ;;
+        90|91|92|93|94|95|96|97|98|99) STATION="STG"; STATION_NAME="St. Gallen" ;;
+        *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+      esac
+      MAPPED_SOURCE="region"
+    fi
+  fi
+  
+  # Find point_id for this station if not already set
+  if [[ -z "${POINT_ID:-}" && -n "${STATION:-}" ]]; then
+    POINT_ID=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/ogd-local-forecasting_meta_point.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | awk -F';' -v s="$STATION" '$3==s && $2=="1" {print $1; exit}' || echo "")
+  fi
+  
+  if [[ "${MAPPED_SOURCE:-}" == "mapping" && -n "${DISTANCE:-}" ]]; then
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert (genaues Mapping, ${DISTANCE}km entfernt)"
+  elif [[ "${MAPPED_SOURCE:-}" == "region" ]]; then
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert (Regions-Fallback)"
+  else
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert"
+  fi
+  
+  # Cache it
+  if [[ -n "$PLZ" ]]; then
+    jq --arg plz "$PLZ" --arg st "$STATION" --arg sn "$STATION_NAME" --arg pid "${POINT_ID:-}" \
+       '.plz[$plz] = {station: $st, station_name: $sn, point_id: $pid}' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  fi
+  if [[ -n "$CITY" ]]; then
+    jq --arg city "$CITY" --arg st "$STATION" --arg sn "$STATION_NAME" --arg pid "${POINT_ID:-}" \
+       '.city[$city] = {station: $st, station_name: $sn, point_id: $pid}' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  fi
+fi
+
+echo ""
+
+# === CURRENT WEATHER ===
+WEATHER=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.messwerte-aktuell/VQHA80.csv" 2>/dev/null | awk -F';' -v s="$STATION" 'NR==1 || $1==s')
+if [[ -n "$WEATHER" ]]; then
+  ROW=$(echo "$WEATHER" | tail -1)
+  TS=$(echo "$ROW" | cut -d';' -f2)
+  [[ ${#TS} -eq 12 ]] && echo "🌡️  Aktuell (${TS:6:2}.${TS:4:2}. ${TS:8:2}:${TS:10:2} UTC)" || echo "🌡️  Aktuell:"
+  
+  # Parse all fields (correct column indices)
+  for i in 3 4 5 6 7 8 9 10 11 12; do
+    VAL=$(echo "$ROW" | cut -d';' -f$i)
+    [[ "$VAL" == "" || "$VAL" == "-" ]] && continue
+    case $i in
+      3) echo "   Temperatur: ${VAL}°C" ;;
+      4) [[ "$VAL" != "0" && "$VAL" != "0.0" ]] && echo "   Regen: ${VAL}mm" ;;
+      5) [[ "$VAL" != "0" ]] && echo "   Sonne: ${VAL}min" ;;
+      6) echo "   Globalstrahlung: ${VAL}W/m²" ;;
+      7) echo "   Luftfeuchte: ${VAL}%" ;;
+      8) echo "   Taupunkt: ${VAL}°C" ;;
+      9) echo "   Windrichtung: ${VAL}°" ;;
+      10) echo "   Wind: ${VAL}km/h" ;;
+      11) echo "   Böen: ${VAL}km/h" ;;
+      12) echo "   Luftdruck: ${VAL}hPa" ;;
+    esac
+  done
+fi
+
+# === FORECAST ===
+if [[ -n "${POINT_ID:-}" ]]; then
+  echo ""
+  echo "🔮 Prognose (${DAYS} Tage):"
+  
+  TODAY=$(date +%Y%m%d)
+  MAX_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100.tre200dx.csv"
+  MAX_CSV=$(curl -sf "$MAX_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS)
+  
+  if [[ -n "$MAX_CSV" ]]; then
+    MIN_URL=$(echo "$MAX_URL" | sed 's/tre200dx/tre200dn/')
+    MIN_CSV=$(curl -sf "$MIN_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS)
+    
+    printf "\n%-12s %8s %8s\n" "Datum" "Max" "Min"
+    echo "─────────────────────────────"
+    
+    i=0
+    echo "$MAX_CSV" | while read -r LINE; do
+      [[ -z "$LINE" ]] && continue
+      DATE=$(echo "$LINE" | cut -d';' -f3)
+      MAX=$(echo "$LINE" | cut -d';' -f4)
+      MIN=$(echo "$MIN_CSV" | awk -F';' -v d="$DATE" '$3==d {print $4}' 2>/dev/null || echo "-")
+      
+      D=${DATE:6:2}.${DATE:4:2}.
+      if [[ $i -eq 0 ]]; then D="Heute"
+      elif [[ $i -eq 1 ]]; then D="Morgen"; fi
+      
+      printf "%-12s %8s %8s\n" "$D" "${MAX}°C" "${MIN}°C"
+      ((i++)) || true
+    done
+  else
+    echo "   (Keine Prognosedaten)"
+  fi
+fi
+
+echo ""

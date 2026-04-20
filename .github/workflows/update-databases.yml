@@ -1,0 +1,67 @@
+name: Update Weather Databases
+
+on:
+  schedule:
+    # Run monthly on the 1st at 00:00 UTC
+    - cron: '0 0 1 * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-databases:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq curl iconv
+        
+    - name: Build databases
+      run: |
+        cd skills/meteoswiss-ogd
+        chmod +x scripts/*.sh
+        ./scripts/build-station-plz-map.sh
+        python3 scripts/build-city-plz-map.py
+        
+    - name: Copy databases to data folder
+      run: |
+        mkdir -p data
+        cp ~/.cache/meteoswiss-ogd/plz-station-map.json data/
+        cp ~/.cache/meteoswiss-ogd/city-plz-map.json data/
+        
+    - name: Commit changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add data/
+        git diff --staged --quiet || (git commit -m "Update weather databases - $(date +%Y-%m-%d)" && git push)
+        
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.run_number }}
+        release_name: Weather Database Update ${{ github.run_number }}
+        body: |
+          Automated update of MeteoSwiss weather station mappings.
+          
+          ## Files
+          - `plz-station-map.json` - ~3200 PLZ to station mappings
+          - `city-plz-map.json` - ~4000 cities to PLZ mappings
+          
+          ## Usage
+          Download and use with the weather-agent script:
+          ```bash
+          curl -L https://github.com/luxus/skill-collection/releases/download/v${{ github.run_number }}/plz-station-map.json
+          ```
+        draft: false
+        prerelease: false

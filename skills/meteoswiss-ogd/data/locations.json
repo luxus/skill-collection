@@ -1,0 +1,58 @@
+{
+  "Eglisau": {
+    "postal_code": "8193",
+    "station_abbr": "LAE",
+    "station_name": "Lägern",
+    "point_id": "819300",
+    "updated": "2026-04-20T15:57:12Z"
+  },
+  "Zürich": {
+    "postal_code": "8000",
+    "station_abbr": "SMA",
+    "station_name": "Zürich/Fluntern",
+    "point_id": "48",
+    "updated": "2026-04-20T15:59:14Z"
+  },
+  "Bern": {
+    "postal_code": "3000",
+    "station_abbr": "BER",
+    "station_name": "Bern/Zollikofen",
+    "point_id": "29",
+    "updated": "2026-04-20T16:00:27Z"
+  },
+  "Genf": {
+    "postal_code": "1200",
+    "station_abbr": "GVE",
+    "station_name": "Genève/Cointrin",
+    "point_id": "53",
+    "updated": "2026-04-20T16:00:27Z"
+  },
+  "Basel": {
+    "postal_code": "4001",
+    "station_abbr": "BAS",
+    "station_name": "Basel/Binningen",
+    "point_id": "400100",
+    "updated": "2026-04-20T16:11:11Z"
+  },
+  "Luzern": {
+    "station_abbr": "LUZ",
+    "station_name": "Luzern",
+    "postal_code": "",
+    "point_id": "",
+    "updated": "2026-04-20T16:12:49Z"
+  },
+  "St. Gallen": {
+    "station_abbr": "STG",
+    "station_name": "St. Gallen",
+    "postal_code": "",
+    "point_id": "",
+    "updated": "2026-04-20T16:13:13Z"
+  },
+  "Glattbrugg": {
+    "postal_code": "8152",
+    "station_abbr": "",
+    "station_name": "",
+    "point_id": "815200",
+    "updated": "2026-04-20T16:43:44Z"
+  }
+}

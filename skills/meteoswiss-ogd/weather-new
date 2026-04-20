@@ -1,0 +1,204 @@
+#!/bin/bash
+set -euo pipefail
+
+# One-call weather for Swiss postal codes
+# Usage: weather <postal_code> [days]
+# Example: weather 8152 3
+
+PLZ="${1:-}"
+DAYS="${2:-3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_FILE="${HOME}/.cache/meteoswiss-ogd/plz-stations.json"
+
+# Create cache dir
+mkdir -p "$(dirname "$CACHE_FILE")"
+[[ -f "$CACHE_FILE" ]] || echo '{}' > "$CACHE_FILE"
+
+if [[ -z "$PLZ" || "$PLZ" == "--help" || "$PLZ" == "-h" ]]; then
+  cat << 'EOF'
+Usage: weather <postal_code> [days]
+
+Get weather and forecast for any Swiss postal code.
+Automatically finds nearest station, caches mapping, 
+shows current weather + forecast.
+
+Examples:
+  weather 8152        # Glattbrugg, 3 days forecast
+  weather 8000 5      # Zürich, 5 days forecast
+  weather 3000 1      # Bern, just today
+
+Output: Current weather + daily forecast table
+Cache: ~/.cache/meteoswiss-ogd/plz-stations.json
+EOF
+  exit "${PLZ:+1}"
+fi
+
+# Validate PLZ
+if ! [[ "$PLZ" =~ ^[0-9]{4}$ ]]; then
+  echo "❌ Ungültige Postleitzahl: $PLZ (muss 4 Ziffern sein)"
+  exit 1
+fi
+
+# Check cache for PLZ→Station mapping
+CACHED_STATION=$(jq -r ".\"$PLZ\".station // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+CACHED_NAME=$(jq -r ".\"$PLZ\".station_name // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+CACHED_POINT=$(jq -r ".\"$PLZ\".point_id // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+
+NOW=$(date '+%d.%m.%Y %H:%M')
+
+echo "🕐 $NOW | PLZ $PLZ"
+echo ""
+
+# If not cached, find nearest station
+if [[ -z "$CACHED_STATION" ]]; then
+  echo "🔍 Suche nächste Wetterstation..."
+  
+  # Load station metadata and find by proximity (simplified: same first digit = same region)
+  # Better: find station with matching postal code prefix or nearest city
+  
+  # Try to find exact match or nearby
+  case "${PLZ:0:1}" in
+    0|1) REGION="Genf/Lausanne"; DEFAULT="GVE" ;;  
+    2) REGION="Bern/Jura"; DEFAULT="BER" ;;
+    3|4) REGION="Zentralschweiz/Ost"; DEFAULT="LUG" ;;
+    5) REGION="Ostschweiz"; DEFAULT="STG" ;;
+    6) REGION="Wallis/Tessin"; DEFAULT="SIO" ;;
+    7) REGION="Graubünden"; DEFAULT="CHZ" ;;
+    8) REGION="Zürich"; DEFAULT="SMA" ;;
+    9) REGION="Ostschweiz/Bodensee"; DEFAULT="STG" ;;
+    *) DEFAULT="SMA" ;;
+  esac
+  
+  # For 8152 (Glattbrugg), use Zürich/SMA
+  if [[ "$PLZ" == 815* || "$PLZ" == 804* ]]; then
+    DEFAULT="SMA"
+    DEFAULT_NAME="Zürich/Fluntern"
+  elif [[ "$PLZ" == 400* ]]; then
+    DEFAULT="BAS"
+    DEFAULT_NAME="Basel/Binningen"
+  fi
+  
+  CACHED_STATION="${DEFAULT:-SMA}"
+  CACHED_NAME="${DEFAULT_NAME:-$REGION}"
+  
+  echo "✓ Nächste Station: $CACHED_STATION ($CACHED_NAME)"
+  
+  # Also try to find point_id from forecast metadata for better forecast
+  POINT_SEARCH=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/ogd-local-forecasting_meta_point.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | awk -F';' -v p="$PLZ" '$3==p {print $1; exit}' || echo "")
+  
+  [[ -n "$POINT_SEARCH" ]] && CACHED_POINT="$POINT_SEARCH"
+  
+  # Cache this mapping
+  jq --arg plz "$PLZ" \
+     --arg st "$CACHED_STATION" \
+     --arg sn "$CACHED_NAME" \
+     --arg pid "${CACHED_POINT:-}" \
+     '.[$plz] = {station: $st, station_name: $sn, point_id: $pid, updated: now | todate}' \
+     "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  
+  echo "  → Gespeichert für zukünftige Aufrufe"
+else
+  echo "📍 Nächste Station: $CACHED_STATION ($CACHED_NAME)"
+fi
+
+echo ""
+
+# === CURRENT WEATHER ===
+WEATHER_DATA=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.messwerte-aktuell/VQHA80.csv" 2>/dev/null | awk -F';' -v s="$CACHED_STATION" 'NR==1 || $1==s') || {
+  echo "❌ Fehler beim Laden der Wetterdaten"
+  exit 1
+}
+
+# Parse header and data
+HEADER=$(echo "$WEATHER_DATA" | head -1)
+DATA_ROW=$(echo "$WEATHER_DATA" | tail -1)
+
+# Extract timestamp
+TIMESTAMP=$(echo "$DATA_ROW" | cut -d';' -f2)
+if [[ ${#TIMESTAMP} -eq 12 ]]; then
+  T_DAY=${TIMESTAMP:6:2}
+  T_MON=${TIMESTAMP:4:2}
+  T_HOUR=${TIMESTAMP:8:2}
+  T_MIN=${TIMESTAMP:10:2}
+  echo "🌡️  Aktuelles Wetter (MeteoSwiss: ${T_DAY}.${T_MON}. ${T_HOUR}:${T_MIN} UTC)"
+else
+  echo "🌡️  Aktuelles Wetter"
+fi
+
+# Parse values
+echo "$HEADER" | tr ';' '\n' | nl -v 1 | while read -r num param; do
+  [[ -z "$param" ]] && continue
+  val=$(echo "$DATA_ROW" | cut -d';' -f"$num")
+  [[ "$val" == "" || "$val" == "-" ]] && continue
+  
+  case "$param" in
+    tre200s0) printf "   %-20s %s°C\n" "Temperatur:" "$val" ;;
+    ure200s0) printf "   %-20s %s%%\n" "Luftfeuchtigkeit:" "$val" ;;
+    rre150z0) [[ "$val" != "0" ]] && printf "   %-20s %smm\n" "Niederschlag:" "$val" ;;
+    fu3010z0) printf "   %-20s %skm/h\n" "Wind:" "$val" ;;
+    fu3010z1) printf "   %-20s %skm/h\n" "Böen:" "$val" ;;
+    dkl010z0) printf "   %-20s %s°\n" "Windrichtung:" "$val" ;;
+    prestas0) printf "   %-20s %shPa\n" "Luftdruck:" "$val" ;;
+  esac
+done
+
+# === FORECAST ===
+echo ""
+echo "🔮 Prognose (${DAYS} Tage):"
+
+# For stations: use daily params (tre200dx/dn)
+# Try today and yesterday's data
+TODAY=$(date +%Y%m%d)
+YESTERDAY=$(date -v-1d +%Y%m%d 2>/dev/null || date -d '1 day ago' +%Y%m%d 2>/dev/null || echo "$TODAY")
+
+FORECAST_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100.tre200dx.csv"
+MAX_DATA=$(curl -sf "$FORECAST_URL" 2>/dev/null | awk -F';' -v s="$CACHED_STATION" '$1==s' | head -$DAYS || true)
+
+if [[ -z "$MAX_DATA" ]]; then
+  # Try yesterday's data
+  FORECAST_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${YESTERDAY}-ch/vnut12.lssw.${YESTERDAY}1100.tre200dx.csv"
+  MAX_DATA=$(curl -sf "$FORECAST_URL" 2>/dev/null | awk -F';' -v s="$CACHED_STATION" '$1==s' | head -$DAYS || true)
+fi
+
+if [[ -n "$MAX_DATA" ]]; then
+  # Get min temps
+  MIN_URL=$(echo "$FORECAST_URL" | sed 's/tre200dx/tre200dn/')
+  MIN_DATA=$(curl -sf "$MIN_URL" 2>/dev/null | awk -F';' -v s="$CACHED_STATION" '$1==s' | head -$DAYS || true)
+  
+  echo ""
+  printf "%-12s %8s %8s\n" "Datum" "Max°C" "Min°C"
+  echo "───────────────────────────────────"
+  
+  # Parse and display
+  DAY_NUM=0
+  echo "$MAX_DATA" | while read -r line; do
+    [[ -z "$line" ]] && continue
+    
+    date_field=$(echo "$line" | cut -d';' -f3)
+    max_temp=$(echo "$line" | cut -d';' -f4)
+    
+    # Format date
+    d_day=${date_field:6:2}
+    d_mon=${date_field:4:2}
+    
+    # Get min temp for this date
+    min_temp=$(echo "$MIN_DATA" | awk -F';' -v d="$date_field" '$3==d {print $4}' 2>/dev/null || echo "-")
+    
+    # Label
+    if [[ $DAY_NUM -eq 0 ]]; then
+      label="Heute"
+    elif [[ $DAY_NUM -eq 1 ]]; then
+      label="Morgen"
+    else
+      label="${d_day}.${d_mon}."
+    fi
+    
+    printf "%-12s %8s %8s\n" "$label" "$max_temp" "${min_temp:--}"
+    ((DAY_NUM++)) || true
+    [[ $DAY_NUM -ge $DAYS ]] && break
+  done
+else
+  echo "   (Prognose nicht verfügbar)"
+fi
+
+echo ""
