@@ -1,0 +1,28 @@
+{
+  "name": "skill-collection",
+  "version": "0.1.0",
+  "description": "Pi package for reusable skills.",
+  "keywords": [
+    "pi-package",
+    "pi-skills",
+    "skills"
+  ],
+  "files": [
+    "skills",
+    "README.md",
+    "package.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luxus/skill-collection.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luxus/skill-collection/issues"
+  },
+  "homepage": "https://github.com/luxus/skill-collection#readme",
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
