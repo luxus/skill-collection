@@ -161,9 +161,37 @@ ${CLAUDE_SKILL_DIR}/scripts/forecast.sh 48
 
 # Pollen data
 ${CLAUDE_SKILL_DIR}/scripts/pollen.sh ZUE
+
+# Quick weather with caching (recommended)
+${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Eglisau"
 ```
 
 All scripts support `--help` for detailed usage.
+
+---
+
+## Location Caching
+
+Save frequently used locations to avoid repeated searches:
+
+```bash
+# Save a location
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh set "Eglisau" "8193" "LAE" "Lägern" "819300"
+
+# Quick weather lookup (uses cache)
+${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Eglisau"
+
+# List all cached locations
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh list
+
+# Get cached data
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh get "Eglisau"
+
+# Delete from cache
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh delete "Eglisau"
+```
+
+Cache stored in: `~/.cache/meteoswiss-ogd/locations.json`
 
 ---
 
