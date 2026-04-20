@@ -72,17 +72,20 @@ else
     fi
   fi
   
-  # If PLZ or no city match, map by region
+  # If PLZ or no city match, map by first 2 digits for better accuracy
   if [[ -z "${STATION:-}" && -n "$PLZ" ]]; then
-    case "${PLZ:0:1}" in
-      0|1) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;
-      2) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;
-      3|4) STATION="LUG"; STATION_NAME="Lugano" ;;
-      5) STATION="STG"; STATION_NAME="St. Gallen" ;;
-      6) STATION="SIO"; STATION_NAME="Sion" ;;
-      7) STATION="CHZ"; STATION_NAME="Chur" ;;
-      8) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
-      9) STATION="STG"; STATION_NAME="St. Gallen" ;;
+    PREFIX="${PLZ:0:2}"
+    case "$PREFIX" in
+      10|11|12) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;  # Genf
+      20|21|22|23|24|25|26|27|28|29) STATION="NEU"; STATION_NAME="Neuchâtel" ;;  # Neuenburg/Jura
+      30|31|32|33|34|35|36) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;  # Bern
+      40|41|42|43|44|45|46|47|48|49) STATION="BAS"; STATION_NAME="Basel/Binningen" ;;  # Basel
+      50|51|52|53|54|55|56|57|58|59) STATION="LUC"; STATION_NAME="Luzern" ;;  # Luzern
+      60|61|62|63|64|65|66) STATION="LUG"; STATION_NAME="Lugano" ;;  # Tessin
+      67|68|69) STATION="SIO"; STATION_NAME="Sion" ;;  # Wallis
+      70|71|72|73|74|75|76) STATION="CHZ"; STATION_NAME="Chur" ;;  # Graubünden
+      80|81|82|83|84|85|86|87|88|89) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;  # Zürich
+      90|91|92|93|94|95|96|97|98|99) STATION="STG"; STATION_NAME="St. Gallen" ;;  # Ostschweiz
       *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
     esac
   fi
