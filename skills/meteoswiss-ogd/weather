@@ -72,30 +72,58 @@ else
     fi
   fi
   
-  # If PLZ or no city match, map by first 2 digits for better accuracy
+  # If PLZ or no city match, use the detailed PLZ->Station mapping if available
   if [[ -z "${STATION:-}" && -n "$PLZ" ]]; then
-    PREFIX="${PLZ:0:2}"
-    case "$PREFIX" in
-      10|11|12) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;  # Genf
-      20|21|22|23|24|25|26|27|28|29) STATION="NEU"; STATION_NAME="Neuchâtel" ;;  # Neuenburg/Jura
-      30|31|32|33|34|35|36) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;  # Bern
-      40|41|42|43|44|45|46|47|48|49) STATION="BAS"; STATION_NAME="Basel/Binningen" ;;  # Basel
-      50|51|52|53|54|55|56|57|58|59) STATION="LUC"; STATION_NAME="Luzern" ;;  # Luzern
-      60|61|62|63|64|65|66) STATION="LUG"; STATION_NAME="Lugano" ;;  # Tessin
-      67|68|69) STATION="SIO"; STATION_NAME="Sion" ;;  # Wallis
-      70|71|72|73|74|75|76) STATION="CHZ"; STATION_NAME="Chur" ;;  # Graubünden
-      80|81) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;  # Zürich
-      82|83|84|85|86|87|88|89) STATION="STG"; STATION_NAME="St. Gallen" ;;  # Thurgau/Ostschweiz
-      90|91|92|93|94|95|96|97|98|99) STATION="STG"; STATION_NAME="St. Gallen" ;;  # Ostschweiz
-      *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
-    esac
+    MAP_FILE="${HOME}/.cache/meteoswiss-ogd/plz-station-map.json"
+    
+    if [[ -f "$MAP_FILE" ]]; then
+      # Use pre-built mapping (very accurate)
+      MAPPED=$(jq -r ".\"$PLZ\" // empty" "$MAP_FILE" 2>/dev/null || echo "")
+      if [[ -n "$MAPPED" ]]; then
+        STATION=$(echo "$MAPPED" | jq -r '.station // empty')
+        STATION_NAME=$(echo "$MAPPED" | jq -r '.station_name // empty')
+        POINT_ID=$(echo "$MAPPED" | jq -r '.point_id // empty')
+        DISTANCE=$(echo "$MAPPED" | jq -r '.distance_km // empty')
+        MAPPED_SOURCE="mapping"
+      fi
+    fi
+    
+    # Fallback: rough region mapping
+    if [[ -z "${STATION:-}" ]]; then
+      PREFIX="${PLZ:0:2}"
+      case "$PREFIX" in
+        10|11|12) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;
+        20|21|22|23|24|25|26|27|28|29) STATION="NEU"; STATION_NAME="Neuchâtel" ;;
+        30|31|32|33|34|35|36) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;
+        40|41|42|43|44|45|46|47|48|49) STATION="BAS"; STATION_NAME="Basel/Binningen" ;;
+        50|51|52|53|54|55|56|57|58|59) STATION="LUC"; STATION_NAME="Luzern" ;;
+        60|61|62|63|64|65|66) STATION="LUG"; STATION_NAME="Lugano" ;;
+        67|68|69) STATION="SIO"; STATION_NAME="Sion" ;;
+        70|71|72|73|74|75|76) STATION="CHZ"; STATION_NAME="Chur" ;;
+        80|81) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+        82|83|84|85|86|87|88|89) STATION="STG"; STATION_NAME="St. Gallen" ;;
+        90|91|92|93|94|95|96|97|98|99) STATION="STG"; STATION_NAME="St. Gallen" ;;
+        *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+      esac
+      MAPPED_SOURCE="region"
+    fi
   fi
   
-  # Find point_id for this station from forecast metadata (station_abbr is column 3, point_type is column 2)
-  POINT_ID=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/ogd-local-forecasting_meta_point.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | awk -F';' -v s="$STATION" '$3==s && $2=="1" {print $1; exit}' || echo "")
+  # Find point_id for this station if not already set
+  if [[ -z "${POINT_ID:-}" && -n "${STATION:-}" ]]; then
+    POINT_ID=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/ogd-local-forecasting_meta_point.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | awk -F';' -v s="$STATION" '$3==s && $2=="1" {print $1; exit}' || echo "")
+  fi
   
-  echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
-  echo "   → Gespeichert"
+  if [[ "${MAPPED_SOURCE:-}" == "mapping" && -n "${DISTANCE:-}" ]]; then
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert (genaues Mapping, ${DISTANCE}km entfernt)"
+  elif [[ "${MAPPED_SOURCE:-}" == "region" ]]; then
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert (Regions-Fallback)"
+  else
+    echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+    echo "   → Gespeichert"
+  fi
   
   # Cache it
   if [[ -n "$PLZ" ]]; then
