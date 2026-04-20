@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Get weather for a location (with caching)
+# Get weather for a location (with caching and auto-cache)
 # Usage: weather-for.sh <location>
 # Example: weather-for.sh "Eglisau"
 
@@ -9,32 +9,28 @@ LOCATION="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE_FILE="${HOME}/.cache/meteoswiss-ogd/locations.json"
 
-# Format current time
-CURRENT_TIME=$(date '+%H:%M')
-CURRENT_DATE=$(date '+%d.%m.%Y')
-CURRENT_WEEKDAY=$(date '+%A')
+# Format current time (when we query)
+QUERY_TIME=$(date '+%H:%M')
+QUERY_DATE=$(date '+%d.%m.%Y')
+QUERY_WEEKDAY=$(date '+%A')
 
 if [[ -z "$LOCATION" || "$1" == "--help" || "$1" == "-h" ]]; then
   cat << 'EOF'
 Usage: weather-for.sh <location>
 
 Get current weather for a location. Uses cache if available,
-otherwise searches for nearest station.
+otherwise searches and auto-caches the best match.
 
 Examples:
   weather-for.sh "Eglisau"
   weather-for.sh "Zürich"
   weather-for.sh "Bern"
-
-First time: caches the location
-Subsequent calls: uses cached station/point_id
-
-Cache management:
-  weather-cache.sh list      # show cached locations
-  weather-cache.sh set "Name" "PLZ" "Station" "StationName" "PointID"
 EOF
   exit "${LOCATION:+1}"
 fi
+
+mkdir -p "$(dirname "$CACHE_FILE")"
+[[ -f "$CACHE_FILE" ]] || echo '{}' > "$CACHE_FILE"
 
 # Try cache first
 if [[ -f "$CACHE_FILE" ]]; then
@@ -43,40 +39,45 @@ if [[ -f "$CACHE_FILE" ]]; then
     STATION_ABBR=$(echo "$CACHED" | jq -r '.station_abbr // empty')
     POINT_ID=$(echo "$CACHED" | jq -r '.point_id // empty')
     POSTAL_CODE=$(echo "$CACHED" | jq -r '.postal_code // empty')
+    STATION_NAME=$(echo "$CACHED" | jq -r '.station_name // empty')
     
     if [[ -n "$STATION_ABBR" ]]; then
-      # Show time and date
-      echo "🕐 ${CURRENT_WEEKDAY}, ${CURRENT_DATE} ${CURRENT_TIME}"
-      echo "📍 $LOCATION (cached: $(echo "$CACHED" | jq -r '.updated // "unknown"' | cut -dT -f1))"
-      echo "   Station: $STATION_ABBR ($(echo "$CACHED" | jq -r '.station_name // ""'))"
+      # Show query time and location info
+      echo "🕐 Abfrage: ${QUERY_WEEKDAY}, ${QUERY_DATE} ${QUERY_TIME}"
+      echo "📍 $LOCATION (gespeichert: $(echo "$CACHED" | jq -r '.updated // "unknown"' | cut -dT -f1))"
+      echo "   Station: $STATION_ABBR (${STATION_NAME:-?})"
       [[ -n "$POSTAL_CODE" ]] && echo "   PLZ: $POSTAL_CODE"
       echo ""
       
-      # Get weather data with timestamp
-      WEATHER_DATA=$("$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null)
+      # Get weather data
+      WEATHER_DATA=$("$SCRIPT_DIR/current-weather.sh" "$STATION_ABBR" 2>/dev/null) || {
+        echo "❌ Fehler beim Laden der Wetterdaten"
+        exit 1
+      }
       
-      # Extract timestamp if present (format: reference_timestamp=YYYYMMDDHHmm)
-      TIMESTAMP=$(echo "$WEATHER_DATA" | grep "^reference_timestamp=" | cut -d'=' -f2 || echo "")
+      # Extract timestamp and format it (Date field = YYYYMMDDHHmm)
+      TIMESTAMP=$(echo "$WEATHER_DATA" | grep "^Date=" | cut -d'=' -f2 || echo "")
       if [[ -n "$TIMESTAMP" && ${#TIMESTAMP} -eq 12 ]]; then
-        # Parse YYYYMMDDHHmm
+        # Parse YYYYMMDDHHmm (UTC)
         YEAR=${TIMESTAMP:0:4}
         MONTH=${TIMESTAMP:4:2}
         DAY=${TIMESTAMP:6:2}
         HOUR=${TIMESTAMP:8:2}
         MIN=${TIMESTAMP:10:2}
-        echo "🌡️  Current weather (updated: ${DAY}.${MONTH}. ${HOUR}:${MIN} UTC):"
+        echo "🌡️  Aktuelles Wetter (MeteoSwiss-Daten vom ${DAY}.${MONTH}. ${HOUR}:${MIN} UTC):"
       else
-        echo "🌡️  Current weather:"
+        echo "🌡️  Aktuelles Wetter:"
       fi
       
       echo "$WEATHER_DATA" | while IFS='=' read -r key value; do
         case "$key" in
-          tre200s0) echo "   Temperature: ${value}°C" ;;
-          ure200s0) echo "   Humidity: ${value}%" ;;
-          rre150z0) echo "   Precipitation: ${value}mm" ;;
+          tre200s0) echo "   Temperatur: ${value}°C" ;;
+          ure200s0) echo "   Luftfeuchtigkeit: ${value}%" ;;
+          rre150z0) echo "   Niederschlag: ${value}mm" ;;
           fu3010z0) echo "   Wind: ${value}km/h" ;;
-          fu3010z1) echo "   Gusts: ${value}km/h" ;;
-          dkl010z0) echo "   Wind direction: ${value}°" ;;
+          fu3010z1) echo "   Böen: ${value}km/h" ;;
+          dkl010z0) echo "   Windrichtung: ${value}°" ;;
+          prestas0) echo "   Luftdruck: ${value}hPa" ;;
         esac
       done
       exit 0
@@ -84,36 +85,91 @@ if [[ -f "$CACHE_FILE" ]]; then
   fi
 fi
 
-# Not cached - search for stations
-echo "🕐 ${CURRENT_WEEKDAY}, ${CURRENT_DATE} ${CURRENT_TIME}"
-echo "🔍 Location not cached. Searching for: $LOCATION"
+# Not cached - search and auto-cache
+echo "🕐 ${QUERY_WEEKDAY}, ${QUERY_DATE} ${QUERY_TIME}"
+echo "🔍 Suche: $LOCATION"
 echo ""
 
 # Try direct station search first
 RESULTS=$("$SCRIPT_DIR/search-stations.sh" "$LOCATION" 2>/dev/null | head -5)
 if [[ -n "$RESULTS" ]]; then
-  echo "Stations found:"
-  echo "$RESULTS" | nl
-  echo ""
-  echo "💡 Tip: Cache a location with:"
-  echo "   weather-cache.sh set \"$LOCATION\" \"PLZ\" \"STATION\" \"NAME\" \"POINTID\""
-  echo ""
-  echo "Example for first result:"
+  # Take first result and auto-cache
   FIRST_LINE=$(echo "$RESULTS" | head -1)
   STATION=$(echo "$FIRST_LINE" | awk -F'|' '{print $1}' | xargs)
   NAME=$(echo "$FIRST_LINE" | awk -F'|' '{print $2}' | xargs)
-  echo "   weather-cache.sh set \"$LOCATION\" \"\" \"$STATION\" \"$NAME\" \"\""
+  CANTON=$(echo "$FIRST_LINE" | awk -F'|' '{print $3}' | xargs)
+  
+  echo "✓ Gefunden: $NAME ($CANTON)"
+  echo "  Station: $STATION"
+  echo "  → Wird automatisch gespeichert..."
+  echo ""
+  
+  # Auto-cache (without point_id, will be added later if needed)
+  jq --arg loc "$LOCATION" \
+     --arg sa "$STATION" \
+     --arg sn "$NAME" \
+     '.[$loc] = {
+       station_abbr: $sa,
+       station_name: $sn,
+       postal_code: "",
+       point_id: "",
+       updated: now | todate
+     }' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  
+  # Now show weather for this station
+  echo "📍 $LOCATION (gespeichert: heute)"
+  echo "   Station: $STATION ($NAME)"
+  echo ""
+  
+  WEATHER_DATA=$("$SCRIPT_DIR/current-weather.sh" "$STATION" 2>/dev/null) || {
+    echo "❌ Fehler beim Laden der Wetterdaten"
+    exit 1
+  }
+  
+  TIMESTAMP=$(echo "$WEATHER_DATA" | grep "^Date=" | cut -d'=' -f2 || echo "")
+  if [[ -n "$TIMESTAMP" && ${#TIMESTAMP} -eq 12 ]]; then
+    YEAR=${TIMESTAMP:0:4}
+    MONTH=${TIMESTAMP:4:2}
+    DAY=${TIMESTAMP:6:2}
+    HOUR=${TIMESTAMP:8:2}
+    MIN=${TIMESTAMP:10:2}
+    echo "🌡️  Aktuelles Wetter (MeteoSwiss-Daten vom ${DAY}.${MONTH}. ${HOUR}:${MIN} UTC):"
+  else
+    echo "🌡️  Aktuelles Wetter:"
+  fi
+  
+  echo "$WEATHER_DATA" | while IFS='=' read -r key value; do
+    case "$key" in
+      tre200s0) echo "   Temperatur: ${value}°C" ;;
+      ure200s0) echo "   Luftfeuchtigkeit: ${value}%" ;;
+      rre150z0) echo "   Niederschlag: ${value}mm" ;;
+      fu3010z0) echo "   Wind: ${value}km/h" ;;
+      fu3010z1) echo "   Böen: ${value}km/h" ;;
+      dkl010z0) echo "   Windrichtung: ${value}°" ;;
+      prestas0) echo "   Luftdruck: ${value}hPa" ;;
+    esac
+  done
+  
+  echo ""
+  echo "💡 Für Prognose den Ort mit PLZ ergänzen:"
+  echo "   weather-cache.sh set \"$LOCATION\" \"PLZ\" \"$STATION\" \"$NAME\" \"POINTID\""
   exit 0
 fi
 
-# Try postal code search
+# Try forecast points for better location matching
 RESULTS=$("$SCRIPT_DIR/search-forecast-points.sh" "$LOCATION" 2>/dev/null | head -5)
 if [[ -n "$RESULTS" ]]; then
-  echo "Forecast points found:"
+  echo "Orte für Prognose gefunden:"
   echo "$RESULTS" | nl
+  echo ""
+  echo "💡 Speichere einen Ort:"
+  FIRST=$(echo "$RESULTS" | head -1)
+  PID=$(echo "$FIRST" | awk -F'|' '{print $1}' | xargs)
+  TYPE=$(echo "$FIRST" | awk -F'|' '{print $2}' | xargs)
+  echo "   weather-cache.sh set \"$LOCATION\" \"PLZ\" \"\" \"\" \"$PID\""
   exit 0
 fi
 
-echo "❌ No results found for: $LOCATION"
-echo "Try a nearby city or postal code."
+echo "❌ Kein Ergebnis für: $LOCATION"
+echo "Versuche eine nahegelegene Stadt oder Postleitzahl."
 exit 1
