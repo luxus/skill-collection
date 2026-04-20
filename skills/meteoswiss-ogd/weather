@@ -1,84 +1,170 @@
 #!/bin/bash
-# MeteoSwiss Weather CLI - Funktioniert überall (Pi, Terminal, Script)
+set -euo pipefail
 
-# Finde das Skill-Verzeichnis automatisch oder nutze Umgebungsvariable
-if [[ -n "${CLAUDE_SKILL_DIR:-}" ]]; then
-  # Wir sind in Pi
-  SKILL_DIR="$CLAUDE_SKILL_DIR"
-elif [[ -f "$(dirname "$0")/scripts/weather-for.sh" ]]; then
-  # Script liegt im Skill-Ordner (relativ)
-  SKILL_DIR="$(dirname "$0")"
-elif [[ -d "$HOME/.pi/agent/git/github.com/luxus/skill-collection/skills/meteoswiss-ogd" ]]; then
-  # Pi hat es installiert
-  SKILL_DIR="$HOME/.pi/agent/git/github.com/luxus/skill-collection/skills/meteoswiss-ogd"
-else
-  echo "Fehler: Kann skill-collection nicht finden."
-  echo ""
-  echo "Lösungen:"
-  echo "  1. In Pi: /skill:meteoswiss-ogd aktivieren"
-  echo "  2. Oder: pi install git:github.com/luxus/skill-collection"
-  echo "  3. Oder: SKILL_DIR setzen:"
-  echo "     export SKILL_DIR=/pfad/zu/skill-collection/skills/meteoswiss-ogd"
-  exit 1
-fi
+# One-call weather for Swiss postal codes or city names
+# Usage: weather <postal_code_or_city> [days]
+# Example: weather 8152 3
+# Example: weather Zürich 3
 
-# Hilfe
-if [[ -z "${1:-}" || "$1" == "--help" || "$1" == "-h" ]]; then
+INPUT="${1:-}"
+DAYS="${2:-3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_FILE="${HOME}/.cache/meteoswiss-ogd/weather-cache.json"
+
+mkdir -p "$(dirname "$CACHE_FILE")"
+[[ -f "$CACHE_FILE" ]] || echo '{}' > "$CACHE_FILE"
+
+if [[ -z "$INPUT" || "$INPUT" == "--help" || "$INPUT" == "-h" ]]; then
   cat << 'EOF'
-MeteoSwiss Weather CLI
+Usage: weather <postal_code_or_city> [days]
 
-Nutzung: weather <befehl> [ort] [optionen]
+Get weather and forecast for any Swiss postal code or city.
+Automatically finds nearest station, caches mapping.
 
-Befehle:
-  now, aktuell     Aktuelles Wetter
-  forecast, prognose  Prognose nächste Tage
-  rain, regen      Regen-Check
-  cache            Location verwalten
+Examples:
+  weather 8152        # Glattbrugg via Zürich
+  weather 8000        # Zürich
+  weather Zürich      # By city name
+  weather 8000 5      # 5 days forecast
 
-Beispiele:
-  weather now "Zürich"
-  weather forecast "Bern" 3
-  weather cache list
-
-Ohne Befehl: Interaktiver Modus
+Output: Current weather + daily forecast
+Cache: ~/.cache/meteoswiss-ogd/weather-cache.json
 EOF
-  exit 0
+  exit "${INPUT:+1}"
 fi
 
-COMMAND="${1:-now}"
-LOCATION="${2:-}"
-DAYS="${3:-3}"
+NOW=$(date '+%d.%m.%Y %H:%M')
 
-case "$COMMAND" in
-  now|aktuell|current)
-    if [[ -z "$LOCATION" ]]; then
-      echo "Usage: weather now <ort>"
-      echo "  z.B.: weather now \"Zürich\""
-      exit 1
+# Check if input is postal code (4 digits) or city name
+if [[ "$INPUT" =~ ^[0-9]{4}$ ]]; then
+  PLZ="$INPUT"
+  CITY=""
+  echo "🕐 $NOW | PLZ $PLZ"
+else
+  CITY="$INPUT"
+  PLZ=""
+  echo "🕐 $NOW | $CITY"
+fi
+
+# Try to load from cache
+if [[ -n "$PLZ" ]]; then
+  CACHED=$(jq -r ".plz.\"$PLZ\" // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+else
+  CACHED=$(jq -r ".city.\"$CITY\" // empty" "$CACHE_FILE" 2>/dev/null || echo "")
+fi
+
+if [[ -n "$CACHED" ]]; then
+  STATION=$(echo "$CACHED" | jq -r '.station // empty')
+  STATION_NAME=$(echo "$CACHED" | jq -r '.station_name // empty')
+  POINT_ID=$(echo "$CACHED" | jq -r '.point_id // empty')
+  echo "📍 $STATION_NAME (Station: $STATION, Point: $POINT_ID)"
+  echo "   (Aus Cache)"
+else
+  echo "🔍 Suche Wetterstation..."
+  
+  # If city name, search stations
+  if [[ -n "$CITY" ]]; then
+    RESULT=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-smn/ogd-smn_meta_stations.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | grep -i "$CITY" | head -1 || echo "")
+    if [[ -n "$RESULT" ]]; then
+      STATION=$(echo "$RESULT" | cut -d';' -f1)
+      STATION_NAME=$(echo "$RESULT" | cut -d';' -f2)
+      PLZ=$(echo "$RESULT" | cut -d';' -f6)  # Not always present
     fi
-    "$SKILL_DIR/scripts/weather-for.sh" "$LOCATION"
-    ;;
-  forecast|prognose|f)
-    if [[ -z "$LOCATION" ]]; then
-      echo "Usage: weather forecast <ort> [tage]"
-      echo "  z.B.: weather forecast \"Bern\" 3"
-      exit 1
-    fi
-    "$SKILL_DIR/scripts/weather-forecast.sh" "$LOCATION" "$DAYS"
-    ;;
-  rain|regen|wird-es-regnen)
-    if [[ -z "$LOCATION" ]]; then
-      echo "Usage: weather rain <ort> [tage]"
-      echo "  z.B.: weather rain \"Zürich\" 2"
-      exit 1
-    fi
-    "$SKILL_DIR/scripts/will-it-rain.sh" "$LOCATION" "$DAYS"
-    ;;
-  cache)
-    "$SKILL_DIR/scripts/weather-cache.sh" "${2:-list}"
-    ;;
-  *)
-    # Versuche es als Ort mit "now"
-    "$SKILL_DIR/scripts/weather-for.sh" "$COMMAND"
-    ;;
-esac
+  fi
+  
+  # If PLZ or no city match, map by region
+  if [[ -z "${STATION:-}" && -n "$PLZ" ]]; then
+    case "${PLZ:0:1}" in
+      0|1) STATION="GVE"; STATION_NAME="Genève/Cointrin" ;;
+      2) STATION="BER"; STATION_NAME="Bern/Zollikofen" ;;
+      3|4) STATION="LUG"; STATION_NAME="Lugano" ;;
+      5) STATION="STG"; STATION_NAME="St. Gallen" ;;
+      6) STATION="SIO"; STATION_NAME="Sion" ;;
+      7) STATION="CHZ"; STATION_NAME="Chur" ;;
+      8) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+      9) STATION="STG"; STATION_NAME="St. Gallen" ;;
+      *) STATION="SMA"; STATION_NAME="Zürich/Fluntern" ;;
+    esac
+  fi
+  
+  # Find point_id for this station from forecast metadata (station_abbr is column 3, point_type is column 2)
+  POINT_ID=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/ogd-local-forecasting_meta_point.csv" 2>/dev/null | iconv -f latin1 -t utf-8 | awk -F';' -v s="$STATION" '$3==s && $2=="1" {print $1; exit}' || echo "")
+  
+  echo "✓ $STATION_NAME (Station: $STATION, Point: ${POINT_ID:-n/a})"
+  echo "   → Gespeichert"
+  
+  # Cache it
+  if [[ -n "$PLZ" ]]; then
+    jq --arg plz "$PLZ" --arg st "$STATION" --arg sn "$STATION_NAME" --arg pid "${POINT_ID:-}" \
+       '.plz[$plz] = {station: $st, station_name: $sn, point_id: $pid}' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  fi
+  if [[ -n "$CITY" ]]; then
+    jq --arg city "$CITY" --arg st "$STATION" --arg sn "$STATION_NAME" --arg pid "${POINT_ID:-}" \
+       '.city[$city] = {station: $st, station_name: $sn, point_id: $pid}' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
+  fi
+fi
+
+echo ""
+
+# === CURRENT WEATHER ===
+WEATHER=$(curl -sf "https://data.geo.admin.ch/ch.meteoschweiz.messwerte-aktuell/VQHA80.csv" 2>/dev/null | awk -F';' -v s="$STATION" 'NR==1 || $1==s')
+if [[ -n "$WEATHER" ]]; then
+  ROW=$(echo "$WEATHER" | tail -1)
+  TS=$(echo "$ROW" | cut -d';' -f2)
+  [[ ${#TS} -eq 12 ]] && echo "🌡️  Aktuell (${TS:6:2}.${TS:4:2}. ${TS:8:2}:${TS:10:2} UTC)" || echo "🌡️  Aktuell:"
+  
+  # Parse all fields (correct column indices)
+  for i in 3 4 5 6 7 8 9 10 11 12; do
+    VAL=$(echo "$ROW" | cut -d';' -f$i)
+    [[ "$VAL" == "" || "$VAL" == "-" ]] && continue
+    case $i in
+      3) echo "   Temperatur: ${VAL}°C" ;;
+      4) [[ "$VAL" != "0" && "$VAL" != "0.0" ]] && echo "   Regen: ${VAL}mm" ;;
+      5) [[ "$VAL" != "0" ]] && echo "   Sonne: ${VAL}min" ;;
+      6) echo "   Globalstrahlung: ${VAL}W/m²" ;;
+      7) echo "   Luftfeuchte: ${VAL}%" ;;
+      8) echo "   Taupunkt: ${VAL}°C" ;;
+      9) echo "   Windrichtung: ${VAL}°" ;;
+      10) echo "   Wind: ${VAL}km/h" ;;
+      11) echo "   Böen: ${VAL}km/h" ;;
+      12) echo "   Luftdruck: ${VAL}hPa" ;;
+    esac
+  done
+fi
+
+# === FORECAST ===
+if [[ -n "${POINT_ID:-}" ]]; then
+  echo ""
+  echo "🔮 Prognose (${DAYS} Tage):"
+  
+  TODAY=$(date +%Y%m%d)
+  MAX_URL="https://data.geo.admin.ch/ch.meteoschweiz.ogd-local-forecasting/${TODAY}-ch/vnut12.lssw.${TODAY}1100.tre200dx.csv"
+  MAX_CSV=$(curl -sf "$MAX_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS)
+  
+  if [[ -n "$MAX_CSV" ]]; then
+    MIN_URL=$(echo "$MAX_URL" | sed 's/tre200dx/tre200dn/')
+    MIN_CSV=$(curl -sf "$MIN_URL" 2>/dev/null | awk -F';' -v pid="$POINT_ID" '$1==pid' | head -$DAYS)
+    
+    printf "\n%-12s %8s %8s\n" "Datum" "Max" "Min"
+    echo "─────────────────────────────"
+    
+    i=0
+    echo "$MAX_CSV" | while read -r LINE; do
+      [[ -z "$LINE" ]] && continue
+      DATE=$(echo "$LINE" | cut -d';' -f3)
+      MAX=$(echo "$LINE" | cut -d';' -f4)
+      MIN=$(echo "$MIN_CSV" | awk -F';' -v d="$DATE" '$3==d {print $4}' 2>/dev/null || echo "-")
+      
+      D=${DATE:6:2}.${DATE:4:2}.
+      if [[ $i -eq 0 ]]; then D="Heute"
+      elif [[ $i -eq 1 ]]; then D="Morgen"; fi
+      
+      printf "%-12s %8s %8s\n" "$D" "${MAX}°C" "${MIN}°C"
+      ((i++)) || true
+    done
+  else
+    echo "   (Keine Prognosedaten)"
+  fi
+fi
+
+echo ""
