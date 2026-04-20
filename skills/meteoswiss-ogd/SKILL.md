@@ -1,19 +1,37 @@
 ---
 name: meteoswiss-ogd
 description: >-
-  Access Swiss weather data from MeteoSwiss Open Government Data.
-  Current conditions, forecasts, and pollen data via direct HTTP.
-  No API key required. Free public data from data.geo.admin.ch.
+  Schweizer Wetterdaten von MeteoSwiss Open Government Data.
+  Aktuelles Wetter, Prognosen, Pollen. Kein API-Key nötig.
 globs: []
 ---
 
 # MeteoSwiss Open Government Data
 
-Access Swiss weather data directly from MeteoSwiss OGD. All data is free, no API key required.
+Schweizer Wetterdaten direkt von MeteoSwiss OGD. Alle Daten sind frei verfügbar, kein API-Key nötig.
 
-**Data source:** `data.geo.admin.ch`  
-**Format:** CSV with semicolon (`;`) delimiters  
-**Encoding:** Metadata CSVs are Latin1 — pipe through `iconv -f latin1 -t utf-8`
+**Datenquelle:** `data.geo.admin.ch`  
+**Format:** CSV mit Semikolon (`;`) als Trennzeichen  
+**Zeichensatz:** Metadaten sind Latin1 — umwandeln mit `iconv -f latin1 -t utf-8`
+
+---
+
+## Schnellstart
+
+**Wichtig:** `${CLAUDE_SKILL_DIR}` ist eine Variable, die Pi automatisch setzt wenn du `/skill:meteoswiss-ogd` aktivierst. Du brauchst sie nicht manuell zu setzen.
+
+```bash
+# In Pi (nach /skill:meteoswiss-ogd)
+${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Zürich"
+${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Bern" 3
+```
+
+**Oder direkt ohne Pi:**
+```bash
+# Pfad anpassen wo du das Repo hast
+SKILL_DIR="/Users/luxus/projects/skill-collection/skills/meteoswiss-ogd"
+$SKILL_DIR/scripts/weather-for.sh "Zürich"
+```
 
 ## Quick Reference
 
@@ -142,41 +160,35 @@ Resolution `d1` = calendar day (0-0 UTC). Values in particles/m³.
 
 ---
 
-## Helper Scripts
+## Scripts (einfach & schnell)
 
-Use the bundled scripts for easier access (handle encoding, error checking):
+Alle Scripts sind im `scripts/` Ordner und haben `--help`:
 
 ```bash
-# Current weather
-${CLAUDE_SKILL_DIR}/scripts/current-weather.sh SMA
-
-# Search stations
-${CLAUDE_SKILL_DIR}/scripts/search-stations.sh zurich
-
-# Search forecast points
-${CLAUDE_SKILL_DIR}/scripts/search-forecast-points.sh 8001
-
-# Get forecast
-${CLAUDE_SKILL_DIR}/scripts/forecast.sh 48
-
-# Pollen data
-${CLAUDE_SKILL_DIR}/scripts/pollen.sh ZUE
-
-# Quick weather with caching (recommended)
+# Aktuelles Wetter (mit Cache)
+${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Zürich"
+${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Bern"
 ${CLAUDE_SKILL_DIR}/scripts/weather-for.sh "Eglisau"
 
-# Forecast (next 3 days)
-${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Eglisau"
+# Prognose nächste Tage
+${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Bern" 3    # 3 Tage
+${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Zürich" 5  # 5 Tage
 
-# Forecast (5 days)
-${CLAUDE_SKILL_DIR}/scripts/weather-forecast.sh "Zürich" 5
+# Location cachen (einmalig nötig)
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh set "Bern" "3000" "BER" "Bern" "29"
+${CLAUDE_SKILL_DIR}/scripts/weather-cache.sh list
 
-# Simple rain check
-${CLAUDE_SKILL_DIR}/scripts/will-it-rain.sh "Zürich"
-${CLAUDE_SKILL_DIR}/scripts/will-it-rain.sh "Bern" 3
+# Rohdaten-Abfragen
+${CLAUDE_SKILL_DIR}/scripts/current-weather.sh SMA         # Station SMA
+${CLAUDE_SKILL_DIR}/scripts/search-stations.sh zürich       # Station suchen
+${CLAUDE_SKILL_DIR}/scripts/pollen.sh PZH                   # Pollen Zürich
 ```
 
-All scripts support `--help` for detailed usage.
+**Hinweis:** Ersetze `${CLAUDE_SKILL_DIR}` mit dem echten Pfad wenn du Pi nicht nutzt, z.B.:
+```bash
+SKILL_DIR="/pfad/zu/skill-collection/skills/meteoswiss-ogd"
+$SKILL_DIR/scripts/weather-for.sh "Zürich"
+```
 
 ---
 
